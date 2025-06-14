@@ -21,7 +21,7 @@ This is the **frontend** of the [P2P File Transfer](https://github.com/v3dant21/
 
 1. **Clone the repo**
    ```bash
-   git clone https://github.com/v3dant21/p2p-file-transfer-frontend.git
+   git clone [https://github.com/v3dant21/p2p-file-transfer-backend]
    cd p2p-file-transfer-frontend
    ```
 
