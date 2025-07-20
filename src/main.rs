@@ -41,8 +41,8 @@ async fn main() {
         .nest_service("/", ServeDir::new("./"))
         .with_state(state);
 
-    let listner = tokio::net::TcpListener::bind("0.0.0.0:8000").await.unwrap();
-    println!("server is running at http://localhost:8000");
+    let listner = tokio::net::TcpListener::bind("localhost:3000").await.unwrap();
+    println!("server is running at http://localhost:3000");
     axum::serve(listner, app).await.unwrap();
 }   
  
@@ -73,7 +73,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
 
         }
     
-        
+    
     });  
 
     let ping_tx = message_tx.clone();
@@ -101,7 +101,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         let mut target_map: HashMap<String, String> = HashMap::new();
         
         async move {
-            while let Some(Ok(msg)) = receiver.next().await {
+            while let Some(Ok(msg)) = dbg!(receiver.next().await) {
                 match msg {
                     Message::Text(text) => {
                         if let Ok(data) = serde_json::from_str::<Value>(&text) {

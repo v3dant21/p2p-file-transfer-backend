@@ -1028,7 +1028,7 @@
     <div id="connection-status"></div>
 
     <script>
-        // Simplified global variables
+        // Global variables
         let selectedFile = null;
         let transferId = null;
         let socket = null;
@@ -1036,6 +1036,15 @@
         let fileMetadata = null;
         let totalBytesReceived = 0;
         let isConnected = false;
+
+        let connectionStatus = {
+            socketState: 0,
+            transferId: null,
+            isConnected: false,
+            fileMetadata: null,
+            receivedChunks: 0,
+            totalChunks: 0
+        };
 
         // Theme management
         function toggleTheme() {
@@ -1065,293 +1074,25 @@
             document.getElementById('home-page').classList.add('hidden');
             document.getElementById('send-page').classList.remove('hidden');
             document.getElementById('receive-page').classList.add('hidden');
-            // If opened with a receive link, redirect
+            
+            // Check URL for transfer ID
             const urlParams = new URLSearchParams(window.location.search);
             const id = urlParams.get('id');
-            if (id) showReceivePage(id);
+            if (id) {
+                // This is a receive link, redirect to receive page
+                showReceivePage(id);
+            }
         }
 
         function showReceivePage(id = null) {
             document.getElementById('home-page').classList.add('hidden');
             document.getElementById('send-page').classList.add('hidden');
             document.getElementById('receive-page').classList.remove('hidden');
+            
             if (id) {
                 document.getElementById('transfer-id-input').value = id;
                 connectToSender();
             }
-        }
-
-        // File selection
-        function handleFileSelect(e) {
-            if (e.target.files && e.target.files.length > 0) {
-                handleFileSelection(e.target.files[0]);
-            }
-        }
-        function handleFileSelection(file) {
-            selectedFile = file;
-            document.getElementById('send-file-card').innerHTML = createFileCard(file);
-            document.getElementById('send-step-1').classList.add('hidden');
-            document.getElementById('send-step-2').classList.remove('hidden');
-        }
-
-        // Generate transfer link and connect sender
-        function generateTransferLink() {
-            if (!selectedFile) return;
-            transferId = generateId();
-            const link = `${window.location.origin}${window.location.pathname}?id=${transferId}`;
-            document.getElementById('transfer-link').value = link;
-            document.getElementById('send-file-card-2').innerHTML = createFileCard(selectedFile);
-            document.getElementById('send-step-2').classList.add('hidden');
-            document.getElementById('send-step-3').classList.remove('hidden');
-            connectWebSocket('sender');
-        }
-
-        // Connect receiver
-        function connectToSender() {
-            const id = document.getElementById('transfer-id-input').value.trim();
-            if (!id) {
-                showError('Please enter a transfer ID');
-                return;
-            }
-            transferId = id;
-            document.getElementById('receive-step-1').classList.add('hidden');
-            document.getElementById('receive-step-2').classList.remove('hidden');
-            connectWebSocket('receiver');
-        }
-
-        // Single connectWebSocket function
-        function connectWebSocket(role) {
-            socket = new WebSocket(`ws://${window.location.hostname}:8000/ws`);
-            socket.onopen = function() {
-                isConnected = true;
-                socket.send(JSON.stringify({
-                    type: 'register',
-                    connectionId: transferId,
-                    role: role
-                }));
-                console.log('Registering with server:', {
-                    type: 'register',
-                    connectionId: transferId,
-                    role: role
-                });
-                if (role === 'sender') {
-                    document.getElementById('send-wifi-animation').classList.add('active');
-                    document.getElementById('send-file-btn').classList.remove('hidden');
-                } else {
-                    document.getElementById('receive-step-2').classList.add('hidden');
-                    document.getElementById('receive-step-3').classList.remove('hidden');
-                }
-            };
-            socket.onmessage = function(event) {
-                if (typeof event.data === 'string') {
-                    try {
-                        const data = JSON.parse(event.data);
-                        handleTextMessage(data, role);
-                        console.log('Received message from server:', data);
-                    } catch (e) {
-                        console.error('Failed to parse message:', e);
-                    }
-                } else if (role === 'receiver') {
-                    console.log('Receiver: Got binary chunk of size', event.data.byteLength || event.data.size);
-                    handleFileChunk(event.data);
-                }
-            };
-            socket.onerror = function(error) {
-                showError('Connection failed. Please try again.');
-                console.error('WebSocket error:', error);
-            };
-            socket.onclose = function() {
-                isConnected = false;
-                if (role === 'sender') {
-                    document.getElementById('send-wifi-animation').classList.remove('active');
-                }
-                console.log('WebSocket closed for role:', role);
-            };
-        }
-
-        // Handle text messages
-        function handleTextMessage(data, role) {
-            if (data.type === 'file_info' && role === 'receiver') {
-                fileMetadata = data;
-                document.getElementById('receive-file-info').textContent = `${data.name} (${formatFileSize(data.size)})`;
-                receivedChunks = [];
-                totalBytesReceived = 0;
-                console.log('Receiver: Got file_info', data);
-            } else if (data.type === 'transfer_complete') {
-                if (role === 'sender') {
-                    document.getElementById('send-progress').classList.add('hidden');
-                    document.getElementById('send-complete').classList.remove('hidden');
-                } else {
-                    console.log('Receiver: Transfer complete signal received');
-                    completeFileTransfer();
-                }
-            } else if (data.type === 'recipient_connected' && role === 'sender') {
-                document.getElementById('send-status').innerHTML = `
-                    <div class="status-message" style="background-color: hsl(var(--primary) / 0.1); color: hsl(var(--primary));">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M20 6 9 17l-5-5"/>
-                        </svg>
-                        <span>Recipient connected! Ready to send.</span>
-                    </div>
-                `;
-                document.getElementById('send-file-btn').classList.remove('hidden');
-            }
-        }
-
-        // Send file logic
-        function sendFile() {
-            if (!selectedFile || !socket || socket.readyState !== WebSocket.OPEN) return;
-            document.getElementById('send-file-btn').classList.add('hidden');
-            document.getElementById('send-progress').classList.remove('hidden');
-            const fileInfo = {
-                type: 'file_info',
-                target_id: transferId,
-                name: selectedFile.name,
-                size: selectedFile.size,
-                mime_type: selectedFile.type || 'application/octet-stream'
-            };
-            socket.send(JSON.stringify(fileInfo));
-            const CHUNK_SIZE = 64 * 1024;
-            let offset = 0;
-            const fileReader = new FileReader();
-            fileReader.onload = function(e) {
-                if (socket && socket.readyState === WebSocket.OPEN) {
-                    socket.send(e.target.result);
-                    offset += e.target.result.byteLength;
-                    const progress = Math.min(100, Math.floor((offset / selectedFile.size) * 100));
-                    document.getElementById('send-progress-percent').textContent = progress + '%';
-                    document.getElementById('send-progress-fill').style.width = progress + '%';
-                    if (offset < selectedFile.size) {
-                        const slice = selectedFile.slice(offset, offset + CHUNK_SIZE);
-                        fileReader.readAsArrayBuffer(slice);
-                    } else {
-                        socket.send(JSON.stringify({
-                            type: 'transfer_complete',
-                            target_id: transferId
-                        }));
-                        setTimeout(() => {
-                            document.getElementById('send-progress').classList.add('hidden');
-                            document.getElementById('send-complete').classList.remove('hidden');
-                        }, 500);
-                    }
-                }
-            };
-            const slice = selectedFile.slice(offset, offset + CHUNK_SIZE);
-            fileReader.readAsArrayBuffer(slice);
-        }
-
-        // File chunk handler
-        function handleFileChunk(chunk) {
-            receivedChunks.push(chunk);
-            totalBytesReceived += chunk.byteLength;
-            console.log('Receiver: Received chunk. Total received:', totalBytesReceived, 'of', fileMetadata ? fileMetadata.size : 'unknown');
-            if (fileMetadata && fileMetadata.size > 0) {
-                const progress = Math.min(100, Math.floor((totalBytesReceived / fileMetadata.size) * 100));
-                document.getElementById('receive-progress-percent').textContent = progress + '%';
-                document.getElementById('receive-progress-fill').style.width = progress + '%';
-                if (totalBytesReceived >= fileMetadata.size) {
-                    console.log('Receiver: All chunks received, completing file transfer');
-                    completeFileTransfer();
-                }
-            }
-        }
-
-        // Complete file transfer
-        function completeFileTransfer() {
-            if (receivedChunks.length === 0) return;
-            const blob = new Blob(receivedChunks, { type: fileMetadata.mime_type || 'application/octet-stream' });
-            const url = URL.createObjectURL(blob);
-            const previewContainer = document.createElement('div');
-            previewContainer.className = 'file-preview';
-            if (fileMetadata.mime_type) {
-                if (fileMetadata.mime_type.startsWith('image/')) {
-                    const img = document.createElement('img');
-                    img.src = url;
-                    img.className = 'preview-image';
-                    previewContainer.appendChild(img);
-                } else if (fileMetadata.mime_type.startsWith('video/')) {
-                    const video = document.createElement('video');
-                    video.src = url;
-                    video.className = 'preview-video';
-                    video.controls = true;
-                    previewContainer.appendChild(video);
-                } else if (fileMetadata.mime_type.startsWith('audio/')) {
-                    const audio = document.createElement('audio');
-                    audio.src = url;
-                    audio.className = 'preview-audio';
-                    audio.controls = true;
-                    previewContainer.appendChild(audio);
-                } else if (fileMetadata.mime_type === 'application/pdf') {
-                    const iframe = document.createElement('iframe');
-                    iframe.src = url;
-                    iframe.className = 'preview-pdf';
-                    previewContainer.appendChild(iframe);
-                } else if (fileMetadata.mime_type.startsWith('text/') || fileMetadata.mime_type === 'application/json') {
-                    fetch(url)
-                        .then(response => response.text())
-                        .then(text => {
-                            const pre = document.createElement('pre');
-                            pre.className = 'preview-text';
-                            pre.textContent = text;
-                            previewContainer.appendChild(pre);
-                        });
-                } else {
-                    previewContainer.innerHTML = `
-                        <div class="preview-unsupported">
-                            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/>
-                                <polyline points="14,2 14,8 20,8"/>
-                            </svg>
-                            <p style="margin-top: 1rem;">Preview not available for this file type</p>
-                        </div>
-                    `;
-                }
-            }
-            const downloadBtn = document.getElementById('download-btn');
-            downloadBtn.parentElement.insertBefore(previewContainer, downloadBtn);
-            downloadBtn.onclick = function() {
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = fileMetadata.name;
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-            };
-            document.getElementById('receive-complete-info').textContent = `${fileMetadata.name} (${formatFileSize(fileMetadata.size)})`;
-            document.getElementById('receive-step-3').classList.add('hidden');
-            document.getElementById('receive-step-4').classList.remove('hidden');
-        }
-
-        function copyTransferLink() {
-            const link = document.getElementById('transfer-link').value;
-            navigator.clipboard.writeText(link).then(() => {
-                const btn = document.getElementById('copy-btn');
-                btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6 9 17l-5-5"/></svg>';
-                setTimeout(() => {
-                    btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>';
-                }, 2000);
-            }).catch(() => {
-                // Fallback for older browsers
-                document.getElementById('transfer-link').select();
-                document.execCommand('copy');
-            });
-        }
-
-        function showError(message) {
-            const errorDiv = document.getElementById('receive-error');
-            errorDiv.textContent = message;
-            errorDiv.classList.remove('hidden');
-        }
-
-        function debugConnection() {
-            console.log('Connection Status:', {
-                socketState: socket ? socket.readyState : 'no socket',
-                transferId: transferId,
-                isConnected: isConnected,
-                fileMetadata: fileMetadata,
-                receivedChunks: receivedChunks.length,
-                totalReceived: totalBytesReceived
-            });
         }
 
         // Utility functions
@@ -1402,6 +1143,422 @@
                     </div>
                 </div>
             `;
+        }
+
+        // File handling functions
+        function handleDragEnter(e) {
+            e.preventDefault();
+            e.currentTarget.classList.add('dragover');
+        }
+
+        function handleDragLeave(e) {
+            e.preventDefault();
+            e.currentTarget.classList.remove('dragover');
+        }
+
+        function handleDragOver(e) {
+            e.preventDefault();
+        }
+
+        function handleDrop(e) {
+            e.preventDefault();
+            e.currentTarget.classList.remove('dragover');
+            
+            if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                const file = e.dataTransfer.files[0];
+                handleFileSelection(file);
+            }
+        }
+
+        function handleFileSelect(e) {
+            if (e.target.files && e.target.files.length > 0) {
+                const file = e.target.files[0];
+                handleFileSelection(file);
+            }
+        }
+
+        function handleFileSelection(file) {
+            selectedFile = file;
+            document.getElementById('send-file-card').innerHTML = createFileCard(file);
+            
+            // Show step 2
+            document.getElementById('send-step-1').classList.add('hidden');
+            document.getElementById('send-step-2').classList.remove('hidden');
+        }
+
+        // Transfer functions
+        function generateTransferLink() {
+            if (!selectedFile) return;
+            
+            transferId = generateId();
+            const link = `${window.location.origin}${window.location.pathname}?id=${transferId}`;
+            
+            document.getElementById('transfer-link').value = link;
+            document.getElementById('send-file-card-2').innerHTML = createFileCard(selectedFile);
+            
+            // Show step 3
+            document.getElementById('send-step-2').classList.add('hidden');
+            document.getElementById('send-step-3').classList.remove('hidden');
+            
+            // Connect to WebSocket
+            connectWebSocket('sender');
+        }
+
+        function connectWebSocket(role) {
+            const wsUrl = `ws://${window.location.hostname}:3000/ws`;
+            socket = new WebSocket(wsUrl);
+
+            socket.onopen = function() {
+                console.log('WebSocket connected');
+                isConnected = true;
+
+                // Register with the server
+                const registerMessage = {
+                    type: 'register',
+                    connectionId: transferId, // always use the global variable
+                    role: role
+                };
+                socket.send(JSON.stringify(registerMessage));
+
+                if (role === 'sender') {
+                    document.getElementById('send-wifi-animation').classList.add('active');
+                    document.getElementById('send-file-btn').classList.remove('hidden');
+                } else {
+                    document.getElementById('receive-step-2').classList.add('hidden');
+                    document.getElementById('receive-step-3').classList.remove('hidden');
+                }
+            };
+            
+            
+            socket.onmessage = function(event) {
+                console.log(event)
+                if (typeof event.data === 'string') {
+                    try {
+                        const data = JSON.parse(event.data);
+                        handleTextMessage(data, role);
+                    } catch (e) {
+                        console.error('Failed to parse message:', e);
+                    }
+                } else {
+                    // Binary data (file chunks)
+                    if (role === 'receiver') {
+                        handleFileChunk(event.data);
+                    }
+                }
+            };
+            
+            socket.onerror = function(error) {
+                console.error('WebSocket error:', error);
+                showError('Connection failed. Please try again.');
+            };
+            
+            socket.onclose = function() {
+                console.log('WebSocket disconnected');
+                isConnected = false;
+                if (role === 'sender') {
+                    document.getElementById('send-wifi-animation').classList.remove('active');
+                }
+            };
+        }
+
+        function handleTextMessage(data, role) {
+            if (data.type === 'file_info' && role === 'receiver') {
+                fileMetadata = data;
+                document.getElementById('receive-file-info').textContent = 
+                    `${data.name} (${formatFileSize(data.size)})`;
+                receivedChunks = [];
+                totalBytesReceived = 0;
+            } else if (data.type === 'transfer_complete') {
+                if (role === 'sender') {
+                    document.getElementById('send-progress').classList.add('hidden');
+                    document.getElementById('send-complete').classList.remove('hidden');
+                } else {
+                    completeFileTransfer();
+                }
+            } else if (data.type === 'recipient_connected' && role === 'sender') {
+                document.getElementById('send-status').innerHTML = `
+                    <div class="status-message" style="background-color: hsl(var(--primary) / 0.1); color: hsl(var(--primary));">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M20 6 9 17l-5-5"/>
+                        </svg>
+                        <span>Recipient connected! Ready to send.</span>
+                    </div>
+                `;
+            }
+        }
+
+        function sendFile() {
+            if (!selectedFile || !socket || socket.readyState !== WebSocket.OPEN) return;
+            
+            document.getElementById('send-file-btn').classList.add('hidden');
+            document.getElementById('send-progress').classList.remove('hidden');
+            
+            const targetId = transferId;
+            
+            // Send file metadata first
+            const fileInfo = {
+                type: 'file_info',
+                target_id: targetId,
+                name: selectedFile.name,
+                size: selectedFile.size,
+                mime_type: selectedFile.type || 'application/octet-stream'
+            };
+            socket.send(JSON.stringify(fileInfo));
+            
+            // Send file in chunks
+            const CHUNK_SIZE = 64 * 1024; // 64KB chunks
+            let offset = 0;
+            const fileReader = new FileReader();
+            
+            fileReader.onload = function(e) {
+                if (socket && socket.readyState === WebSocket.OPEN) {
+                    // Send target_id first as JSON, then binary data
+                    const message = {
+                        target_id: targetId
+                    };
+                    socket.send(JSON.stringify(message));
+                    socket.send(e.target.result);
+                    
+                    offset += e.target.result.byteLength;
+                    const progress = Math.min(100, Math.floor((offset / selectedFile.size) * 100));
+                    
+                    document.getElementById('send-progress-percent').textContent = progress + '%';
+                    document.getElementById('send-progress-fill').style.width = progress + '%';
+                    
+                    if (offset < selectedFile.size) {
+                        // Read next chunk
+                        const slice = selectedFile.slice(offset, offset + CHUNK_SIZE);
+                        fileReader.readAsArrayBuffer(slice);
+                    } else {
+                        // Transfer complete
+                        const completeMessage = {
+                            type: 'transfer_complete',
+                            target_id: targetId
+                        };
+                        socket.send(JSON.stringify(completeMessage));
+                        
+                        setTimeout(() => {
+                            document.getElementById('send-progress').classList.add('hidden');
+                            document.getElementById('send-complete').classList.remove('hidden');
+                        }, 500);
+                    }
+                }
+            };
+            
+            // Start reading first chunk
+            const slice = selectedFile.slice(offset, offset + CHUNK_SIZE);
+            fileReader.readAsArrayBuffer(slice);
+        }
+
+        function connectToSender() {
+            const id = document.getElementById('transfer-id-input').value.trim();
+            if (!id) {
+                showError('Please enter a transfer ID');
+                return;
+            }
+            transferId = id; // set the global variable
+            document.getElementById('receive-step-1').classList.add('hidden');
+            document.getElementById('receive-step-2').classList.remove('hidden');
+            connectWebSocket('receiver'); // only pass the role
+        }
+
+        function handleFileChunk(chunk) {
+            receivedChunks.push(chunk);
+            totalBytesReceived += chunk.byteLength;
+            
+            if (fileMetadata && fileMetadata.size > 0) {
+                const progress = Math.min(100, Math.floor((totalBytesReceived / fileMetadata.size) * 100));
+                document.getElementById('receive-progress-percent').textContent = progress + '%';
+                document.getElementById('receive-progress-fill').style.width = progress + '%';
+                
+                if (totalBytesReceived >= fileMetadata.size) {
+                    completeFileTransfer();
+                }
+            }
+        }
+
+        function completeFileTransfer() {
+            if (receivedChunks.length === 0) return;
+            
+            const blob = new Blob(receivedChunks, { type: fileMetadata.mime_type || 'application/octet-stream' });
+            const url = URL.createObjectURL(blob);
+            
+            // Add preview container before the download button
+            const previewContainer = document.createElement('div');
+            previewContainer.className = 'file-preview';
+            
+            // Handle different file types
+            if (fileMetadata.mime_type) {
+                if (fileMetadata.mime_type.startsWith('image/')) {
+                    // Image preview
+                    const img = document.createElement('img');
+                    img.src = url;
+                    img.className = 'preview-image';
+                    previewContainer.appendChild(img);
+                } else if (fileMetadata.mime_type.startsWith('video/')) {
+                    // Video preview
+                    const video = document.createElement('video');
+                    video.src = url;
+                    video.className = 'preview-video';
+                    video.controls = true;
+                    previewContainer.appendChild(video);
+                } else if (fileMetadata.mime_type.startsWith('audio/')) {
+                    // Audio preview
+                    const audio = document.createElement('audio');
+                    audio.src = url;
+                    audio.className = 'preview-audio';
+                    audio.controls = true;
+                    previewContainer.appendChild(audio);
+                } else if (fileMetadata.mime_type === 'application/pdf') {
+                    // PDF preview
+                    const iframe = document.createElement('iframe');
+                    iframe.src = url;
+                    iframe.className = 'preview-pdf';
+                    previewContainer.appendChild(iframe);
+                } else if (fileMetadata.mime_type.startsWith('text/') || 
+                           fileMetadata.mime_type === 'application/json') {
+                    // Text preview
+                    fetch(url)
+                        .then(response => response.text())
+                        .then(text => {
+                            const pre = document.createElement('pre');
+                            pre.className = 'preview-text';
+                            pre.textContent = text;
+                            previewContainer.appendChild(pre);
+                        });
+                } else {
+                    // Unsupported file type
+                    previewContainer.innerHTML = `
+                        <div class="preview-unsupported">
+                            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/>
+                                <polyline points="14,2 14,8 20,8"/>
+                            </svg>
+                            <p style="margin-top: 1rem;">Preview not available for this file type</p>
+                        </div>
+                    `;
+                }
+            }
+            
+            // Insert preview before download button
+            const downloadBtn = document.getElementById('download-btn');
+            downloadBtn.parentElement.insertBefore(previewContainer, downloadBtn);
+            
+            // Set up download button
+            downloadBtn.onclick = function() {
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = fileMetadata.name;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+            };
+            
+            document.getElementById('receive-complete-info').textContent = 
+                `${fileMetadata.name} (${formatFileSize(fileMetadata.size)})`;
+            
+            document.getElementById('receive-step-3').classList.add('hidden');
+            document.getElementById('receive-step-4').classList.remove('hidden');
+        }
+
+        function copyTransferLink() {
+            const link = document.getElementById('transfer-link').value;
+            navigator.clipboard.writeText(link).then(() => {
+                const btn = document.getElementById('copy-btn');
+                btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6 9 17l-5-5"/></svg>';
+                setTimeout(() => {
+                    btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>';
+                }, 2000);
+            }).catch(() => {
+                // Fallback for older browsers
+                document.getElementById('transfer-link').select();
+                document.execCommand('copy');
+            });
+        }
+
+        function showError(message) {
+            const errorDiv = document.getElementById('receive-error');
+            errorDiv.textContent = message;
+            errorDiv.classList.remove('hidden');
+        }
+
+        function debugConnection() {
+            console.log('Connection Status:', {
+                socketState: socket ? socket.readyState : 'no socket',
+                transferId: transferId,
+                isConnected: isConnected,
+                fileMetadata: fileMetadata,
+                receivedChunks: receivedChunks.length,
+                totalReceived: totalBytesReceived
+            });
+        }
+
+        function connectWebSocket(role, transferId) {
+            console.log(window.location.host);
+            const ws = new WebSocket(`ws://${window.location.host}/ws`);
+            
+            ws.onopen = () => {
+                connectionStatus.socketState = ws.readyState;
+                connectionStatus.isConnected = true;
+                connectionStatus.transferId = transferId;
+                updateConnectionStatus();
+                
+                // Register with the server
+                ws.send(JSON.stringify({
+                    type: 'register',
+                    role: role,
+                    connectionId: transferId 
+                }));
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    if (event.data instanceof Blob) {
+                        handleFileChunk(event.data);
+                        connectionStatus.receivedChunks++;
+                        updateConnectionStatus();
+                    } else {
+                        const data = JSON.parse(event.data);
+                        if (data.type === 'file_metadata') {
+                            connectionStatus.fileMetadata = data;
+                            connectionStatus.totalChunks = Math.ceil(data.size / CHUNK_SIZE);
+                            updateConnectionStatus();
+                        }
+                    }
+                } catch (error) {
+                    console.error('Error handling message:', error);
+                }
+            };
+
+            ws.onclose = () => {
+                connectionStatus.socketState = ws.readyState;
+                connectionStatus.isConnected = false;
+                updateConnectionStatus();
+            };
+
+            return ws;
+        }
+
+        function updateConnectionStatus() {
+            const status = {
+                socketState: connectionStatus.socketState,
+                transferId: window.location.href,
+                isConnected: connectionStatus.isConnected,
+                fileMetadata: connectionStatus.fileMetadata,
+                receivedChunks: connectionStatus.receivedChunks,
+                totalChunks: connectionStatus.totalChunks
+            };
+            
+            // Update UI elements
+            const statusContainer = document.getElementById('connection-status');
+            if (statusContainer) {
+                statusContainer.innerHTML = `
+                    <div class="status-indicator ${status.isConnected ? 'connected' : 'disconnected'}"></div>
+                    <div class="status-text">
+                        ${status.isConnected ? 'Connected' : 'Disconnected'}
+                    </div>
+                `;
+            }
         }
 
         function resetSendPage() {
