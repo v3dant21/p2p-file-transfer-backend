@@ -20,19 +20,35 @@ struct FileMetadata {
     mime_type: String,
 } 
 #[derive(Clone)]
-struct PeerInfo {
-    tx: broadcast::Sender<Message>,
-    role: String,
+struct Pair {
+    sender: Option<broadcast::Sender<Message>>,
+    receiver: Option<broadcast::Sender<Message>>,
 }
 
 #[derive(Clone)]
 struct AppState {
-    connection: Arc<Mutex<HashMap<String, PeerInfo>>>,
+    pairs: Arc<Mutex<HashMap<String, Pair>>>,
+    conn_index: Arc<Mutex<HashMap<String, (String, String)>>>,
+}
+
+fn normalize_id(raw: &str) -> String {
+    // If a full URL was pasted (e.g., http://localhost:8000/?id=XYZ), extract the id param
+    if let Some(idx) = raw.find("?id=") {
+        return raw[idx+4..].to_string();
+    }
+    // Fallback: if there's an '=', try to take the last segment
+    if raw.contains('=') {
+        if let Some(last) = raw.rsplit('=').next() {
+            return last.to_string();
+        }
+    }
+    raw.to_string()
 }
 #[tokio::main]
 async fn main() {
     let state = AppState{
-        connection: Arc::new(Mutex::new(HashMap::new()))
+        pairs: Arc::new(Mutex::new(HashMap::new())),
+        conn_index: Arc::new(Mutex::new(HashMap::new())),
     };
     
     // Fix the router configuration
@@ -99,6 +115,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         let state = state.clone();
         let tx = tx.clone();
         let mut target_map: HashMap<String, String> = HashMap::new();
+        let mut total_bytes_forwarded: usize = 0;
         
         async move {
             while let Some(Ok(msg)) = receiver.next().await {
@@ -106,20 +123,27 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                     Message::Text(text) => {
                         if let Ok(data) = serde_json::from_str::<Value>(&text) {
                             if data["type"] == "register" {
-                                if let (Some(id), Some(role)) = (data["connectionId"].as_str(), data["role"].as_str()) {
-                                    let peer_info = PeerInfo {
-                                        tx: tx.clone(),
-                                        role: role.to_string(),
-                                    };
-                                    state.connection.lock().await.insert(id.to_string(), peer_info);
-                                    println!("Registered {} as {}", id, role);
+                                if let (Some(id_raw), Some(role)) = (data["connectionId"].as_str(), data["role"].as_str()) {
+                                    let id = normalize_id(id_raw);
+                                    let mut pairs = state.pairs.lock().await;
+                                    let entry = pairs.entry(id.to_string()).or_insert(Pair { sender: None, receiver: None });
+                                    if role == "sender" {
+                                        entry.sender = Some(tx.clone());
+                                    } else if role == "receiver" {
+                                        entry.receiver = Some(tx.clone());
+                                    }
+                                    println!("[register] conn={} pair_id={} role={} (raw={})", conn_id, id, role, id_raw);
 
-                                    // Notify sender when receiver connects
+                                    state.conn_index.lock().await.insert(conn_id.clone(), (id.to_string(), role.to_string()));
+
                                     if role == "receiver" {
-                                        if let Some(sender_tx) = state.connection.lock().await.get(id) {
-                                            let _ = sender_tx.tx.send(Message::Text(json!({
+                                        if let Some(sender_tx) = entry.sender.as_ref() {
+                                            let _ = sender_tx.send(Message::Text(json!({
                                                 "type": "recipient_connected"
                                             }).to_string()));
+                                            println!("[notify] recipient_connected sent to sender for pair_id={}", id);
+                                        } else {
+                                            println!("[notify] receiver connected but sender missing for pair_id={}", id);
                                         }
                                     }
                                 }
@@ -128,32 +152,57 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                             
                             // Handle file metadata
                             if data["type"] == "file_info" {
-                                if let Some(target_id) = data["target_id"].as_str() {
-                                    target_map.insert(conn_id.clone(), target_id.to_string());
-                                    if let Some(target_tx) = state.connection.lock().await.get(target_id) {
-                                        let _ = target_tx.tx.send(Message::Text(text));
+                                if let Some(pair_id_raw) = data["target_id"].as_str() {
+                                    let pair_id = normalize_id(pair_id_raw);
+                                    target_map.insert(conn_id.clone(), pair_id.to_string());
+                                    let pairs = state.pairs.lock().await;
+                                    if let Some((_, role)) = state.conn_index.lock().await.get(&conn_id).cloned() {
+                                        if let Some(pair) = pairs.get(&pair_id) {
+                                            let target_tx = if role == "sender" { pair.receiver.as_ref() } else { pair.sender.as_ref() };
+                                            if let Some(t) = target_tx {
+                                                println!("[file_info] from conn={} role={} -> pair_id={} forwarding (raw={})", conn_id, role, pair_id, pair_id_raw);
+                                                let _ = t.send(Message::Text(text));
+                                            } else {
+                                                println!("[file_info] counterpart missing for pair_id={} (role={})", pair_id, role);
+                                            }
+                                        } else { println!("[file_info] pair not found for pair_id={} (raw={})", pair_id, pair_id_raw); }
                                     }
                                 }
                                 continue;
                             }
 
                             // Forward regular messages
-                            if let Some(target_id) = data["target_id"].as_str() {
-                                target_map.insert(conn_id.clone(), target_id.to_string());
-                                if let Some(target_tx) = state.connection.lock().await.get(target_id) {
-                                    let _ = target_tx.tx.send(Message::Text(text));
+                            if let Some(pair_id_raw) = data["target_id"].as_str() {
+                                let pair_id = normalize_id(pair_id_raw);
+                                target_map.insert(conn_id.clone(), pair_id.to_string());
+                                let pairs = state.pairs.lock().await;
+                                if let Some((_, role)) = state.conn_index.lock().await.get(&conn_id).cloned() {
+                                    if let Some(pair) = pairs.get(&pair_id) {
+                                        let target_tx = if role == "sender" { pair.receiver.as_ref() } else { pair.sender.as_ref() };
+                                        if let Some(t) = target_tx {
+                                            println!("[text] from conn={} role={} -> pair_id={} forwarding (raw={})", conn_id, role, pair_id, pair_id_raw);
+                                            let _ = t.send(Message::Text(text));
+                                        } else { println!("[text] counterpart missing for pair_id={} (role={})", pair_id, role); }
+                                    } else { println!("[text] pair not found for pair_id={} (raw={})", pair_id, pair_id_raw); }
                                 }
                             }
                         }
                     }
                     Message::Binary(bin_data) => {
-                        if let Some(target_id) = target_map.get(&conn_id) {
-                            if let Some(target_tx) = state.connection.lock().await.get(target_id) {
-                                println!("Forwarding binary chunk of size: {}", bin_data.len());
-                                let _ = target_tx.tx.send(Message::Binary(bin_data));
+                        if let Some(pair_id) = target_map.get(&conn_id).cloned() {
+                            let pairs = state.pairs.lock().await;
+                            if let Some((_, role)) = state.conn_index.lock().await.get(&conn_id).cloned() {
+                                if let Some(pair) = pairs.get(&pair_id) {
+                                    let target_tx = if role == "sender" { pair.receiver.as_ref() } else { pair.sender.as_ref() };
+                                    if let Some(t) = target_tx {
+                                        total_bytes_forwarded += bin_data.len();
+                                        println!("[binary] conn={} role={} -> pair_id={} chunk={} bytes, total={} bytes", conn_id, role, pair_id, bin_data.len(), total_bytes_forwarded);
+                                        let _ = t.send(Message::Binary(bin_data));
+                                    } else { println!("[binary] counterpart missing for pair_id={} (role={})", pair_id, role); }
+                                } else { println!("[binary] pair not found for pair_id={}", pair_id); }
                             }
                         } else {
-                            println!("No target set for binary transfer from {}", conn_id);
+                            println!("[binary] No target_id set yet for conn={} (expect a preceding JSON with target_id)", conn_id);
                         }
                     }
                     Message::Close(_) => break,
@@ -168,7 +217,19 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         _= forward_task=> {},
         _= receive_task=>{},
     }
-    state.connection.lock().await.remove(&conn_id_clone);
+    if let Some((pair_id, role)) = state.conn_index.lock().await.remove(&conn_id_clone) {
+        let mut pairs = state.pairs.lock().await;
+        if let Some(entry) = pairs.get_mut(&pair_id) {
+            if role == "sender" {
+                entry.sender = None;
+            } else if role == "receiver" {
+                entry.receiver = None;
+            }
+            if entry.sender.is_none() && entry.receiver.is_none() {
+                pairs.remove(&pair_id);
+            }
+        }
+    }
     println!("connection closed{}", conn_id_clone)
 
 

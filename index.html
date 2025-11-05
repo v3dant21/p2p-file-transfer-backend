@@ -1118,7 +1118,7 @@
             socket = new WebSocket(wsUrl);
             
             socket.onopen = function() {
-                console.log('WebSocket connected');
+                console.log('[ws] connected role=', role, 'url=', wsUrl);
                 isConnected = true;
                 
                 // Register with the server
@@ -1127,6 +1127,7 @@
                     connectionId: transferId || document.getElementById('transfer-id-input').value,
                     role: role
                 };
+                console.log('[ws] send register', registerMessage);
                 socket.send(JSON.stringify(registerMessage));
                 
                 if (role === 'sender') {
@@ -1142,6 +1143,7 @@
                 if (typeof event.data === 'string') {
                     try {
                         const data = JSON.parse(event.data);
+                        console.log('[ws] recv text', data);
                         handleTextMessage(data, role);
                     } catch (e) {
                         console.error('Failed to parse message:', e);
@@ -1149,18 +1151,19 @@
                 } else {
                     // Binary data (file chunks)
                     if (role === 'receiver') {
+                        console.log('[ws] recv binary size=', event.data.byteLength || (event.data.size ?? 'unknown'));
                         handleFileChunk(event.data);
                     }
                 }
             };
             
             socket.onerror = function(error) {
-                console.error('WebSocket error:', error);
+                console.error('[ws] error:', error);
                 showError('Connection failed. Please try again.');
             };
             
             socket.onclose = function() {
-                console.log('WebSocket disconnected');
+                console.log('[ws] disconnected role=', role);
                 isConnected = false;
                 if (role === 'sender') {
                     document.getElementById('send-wifi-animation').classList.remove('active');
@@ -1169,17 +1172,21 @@
         }
 
         function handleTextMessage(data, role) {
+            console.log('[ui] handleTextMessage role=', role, 'type=', data.type);
             if (data.type === 'file_info' && role === 'receiver') {
                 fileMetadata = data;
                 document.getElementById('receive-file-info').textContent = 
                     `${data.name} (${formatFileSize(data.size)})`;
                 receivedChunks = [];
                 totalBytesReceived = 0;
+                console.log('[rx] file_info received', { name: data.name, size: data.size, mime: data.mime_type });
             } else if (data.type === 'transfer_complete') {
                 if (role === 'sender') {
                     document.getElementById('send-progress').classList.add('hidden');
                     document.getElementById('send-complete').classList.remove('hidden');
+                    console.log('[tx] transfer_complete ack received by sender');
                 } else {
+                    console.log('[rx] transfer_complete received, finalizing');
                     completeFileTransfer();
                 }
             } else if (data.type === 'recipient_connected' && role === 'sender') {
@@ -1191,6 +1198,7 @@
                         <span>Recipient connected! Ready to send.</span>
                     </div>
                 `;
+                console.log('[ui] recipient_connected for transferId=', transferId);
             }
         }
 
@@ -1210,6 +1218,7 @@
                 size: selectedFile.size,
                 mime_type: selectedFile.type || 'application/octet-stream'
             };
+            console.log('[tx] send file_info', fileInfo);
             socket.send(JSON.stringify(fileInfo));
             
             // Send file in chunks
@@ -1223,11 +1232,15 @@
                     const message = {
                         target_id: targetId
                     };
+                    console.log('[tx] send target_id for chunk', message);
                     socket.send(JSON.stringify(message));
-                    socket.send(e.target.result);
+                    const buf = e.target.result;
+                    console.log('[tx] send binary chunk bytes=', buf.byteLength, 'offset=', offset);
+                    socket.send(buf);
                     
-                    offset += e.target.result.byteLength;
+                    offset += buf.byteLength;
                     const progress = Math.min(100, Math.floor((offset / selectedFile.size) * 100));
+                    console.log('[tx] progress', { offset, size: selectedFile.size, progress });
                     
                     document.getElementById('send-progress-percent').textContent = progress + '%';
                     document.getElementById('send-progress-fill').style.width = progress + '%';
@@ -1235,6 +1248,7 @@
                     if (offset < selectedFile.size) {
                         // Read next chunk
                         const slice = selectedFile.slice(offset, offset + CHUNK_SIZE);
+                        console.log('[tx] read next slice', { from: offset, to: Math.min(offset + CHUNK_SIZE, selectedFile.size) });
                         fileReader.readAsArrayBuffer(slice);
                     } else {
                         // Transfer complete
@@ -1242,6 +1256,7 @@
                             type: 'transfer_complete',
                             target_id: targetId
                         };
+                        console.log('[tx] send transfer_complete', completeMessage);
                         socket.send(JSON.stringify(completeMessage));
                         
                         setTimeout(() => {
@@ -1254,6 +1269,7 @@
             
             // Start reading first chunk
             const slice = selectedFile.slice(offset, offset + CHUNK_SIZE);
+            console.log('[tx] start slicing first chunk', { from: 0, to: Math.min(CHUNK_SIZE, selectedFile.size) });
             fileReader.readAsArrayBuffer(slice);
         }
 
@@ -1274,13 +1290,16 @@
         function handleFileChunk(chunk) {
             receivedChunks.push(chunk);
             totalBytesReceived += chunk.byteLength;
+            console.log('[rx] chunk received bytes=', chunk.byteLength, 'total=', totalBytesReceived);
             
             if (fileMetadata && fileMetadata.size > 0) {
                 const progress = Math.min(100, Math.floor((totalBytesReceived / fileMetadata.size) * 100));
                 document.getElementById('receive-progress-percent').textContent = progress + '%';
                 document.getElementById('receive-progress-fill').style.width = progress + '%';
+                console.log('[rx] progress', { totalBytesReceived, expected: fileMetadata.size, progress });
                 
                 if (totalBytesReceived >= fileMetadata.size) {
+                    console.log('[rx] expected size reached, completing');
                     completeFileTransfer();
                 }
             }
@@ -1291,6 +1310,7 @@
             
             const blob = new Blob(receivedChunks, { type: fileMetadata.mime_type || 'application/octet-stream' });
             const url = URL.createObjectURL(blob);
+            console.log('[rx] completeFileTransfer', { chunks: receivedChunks.length, blobSize: blob.size, metaSize: fileMetadata?.size });
             
             document.getElementById('download-btn').onclick = function() {
                 const a = document.createElement('a');
