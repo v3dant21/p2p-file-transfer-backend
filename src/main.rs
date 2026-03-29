@@ -57,9 +57,14 @@ async fn main() {
         .nest_service("/", ServeDir::new("./"))
         .with_state(state);
 
-    let listner = tokio::net::TcpListener::bind("0.0.0.0:8000").await.unwrap();
-    println!("server is running at http://localhost:8000");
-    axum::serve(listner, app).await.unwrap();
+ let port = env::var("PORT").unwrap_or("8000".to_string());
+    let addr = format!("0.0.0.0:{}", port);
+
+    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+
+    println!("server is running on {}", addr);
+
+    axum::serve(listener, app).await.unwrap();
 }   
  
 async fn WebSocket_handler (
