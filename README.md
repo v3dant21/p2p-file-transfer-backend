@@ -21,4 +21,4 @@ Transfers require both tabs and sufficient destination storage. Disconnects and 
 invalidate the link and require a fresh transfer.
 
 The Render Blueprint builds the frontend and relay in one Docker image on the
-`render-transfer` branch. Run a single instance because pairing lives in memory.
+`main` branch. Run a single instance because pairing lives in memory.
