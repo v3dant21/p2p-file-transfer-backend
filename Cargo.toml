@@ -12,3 +12,8 @@ serde_json =  "1.0"
 uuid= {version = "1.4", features = ["v4"]}
 futures= "0.3"
 futures-util = "0.3"
+
+[dev-dependencies]
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio", "service"] }
+tokio-tungstenite = "0.24"

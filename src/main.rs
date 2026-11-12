@@ -156,3 +156,66 @@ async fn relay(mut socket: WebSocket, rooms: Rooms) {
         let _ = peer.send(Message::Close(None)).await;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hyper_util::{rt::TokioIo, service::TowerToHyperService};
+    use tokio::io::DuplexStream;
+    use tokio_tungstenite::{tungstenite::Message as Frame, WebSocketStream};
+
+    async fn client(app: Router, role: &str) -> WebSocketStream<DuplexStream> {
+        let (client, server) = tokio::io::duplex(8192);
+        tokio::spawn(
+            hyper::server::conn::http1::Builder::new()
+                .serve_connection(TokioIo::new(server), TowerToHyperService::new(app))
+                .with_upgrades(),
+        );
+        let (mut ws, _) = tokio_tungstenite::client_async("ws://test/ws", client)
+            .await
+            .unwrap();
+        let registration =
+            serde_json::json!({"type":"register","connectionId":"sample","role":role});
+        ws.send(Frame::Text(registration.to_string()))
+            .await
+            .unwrap();
+        ws
+    }
+
+    async fn receive(ws: &mut WebSocketStream<DuplexStream>) -> Frame {
+        loop {
+            let msg = tokio::time::timeout(Duration::from_secs(3), ws.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            if !matches!(msg, Frame::Ping(_) | Frame::Pong(_)) {
+                return msg;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn transfer_and_acknowledge() {
+        let app = Router::new()
+            .route("/ws", get(upgrade))
+            .with_state(Rooms::default());
+        let mut sender = client(app.clone(), "sender").await;
+        let mut receiver = client(app, "receiver").await;
+        assert!(receive(&mut sender)
+            .await
+            .into_text()
+            .unwrap()
+            .contains("recipient_connected"));
+        let data: Vec<u8> = (0..164_973).map(|i| (i % 251) as u8).collect();
+        let mut received = Vec::new();
+        for chunk in data.chunks(65_536) {
+            sender.send(Frame::Binary(chunk.to_vec())).await.unwrap();
+            received.extend(receive(&mut receiver).await.into_data());
+        }
+        assert_eq!(data, received);
+        let ack = Frame::Text(r#"{"type":"transfer_complete"}"#.into());
+        receiver.send(ack.clone()).await.unwrap();
+        assert_eq!(receive(&mut sender).await, ack);
+    }
+}
