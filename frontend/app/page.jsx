@@ -2,7 +2,7 @@
 import {useEffect, useRef, useState} from "react";
 import {Session, Phase, MEMORY_LIMIT} from "../lib/session";
 
-import {Icon, TransferRoute} from "./visuals";
+import {Icon, SignalField, TransferRoute} from "./visuals";
 
 const Page = Object.freeze({HOME: "home", SEND: "send", RECEIVE: "receive"});
 const blank = {phase: Phase.CONNECTING, bytes: 0, size: 0};
@@ -120,5 +120,6 @@ export default function TransferPage() {
       {page !== Page.HOME && <button className="back" onClick={() => navigate(Page.HOME)}>{progressing && view.phase !== Phase.COMPLETE ? "Cancel transfer" : "Back to transfers"}</button>}
       {page === Page.HOME && view.phase === Phase.ERROR && <div role="alert"><p>{view.error}</p><button className="action" onClick={() => setAttempt(n => n + 1)}>Reconnect</button></div>}
       <aside><h2>During a transfer</h2><p>Keep both tabs open until the receiver confirms completion. For files larger than 32 MiB, use a receiving browser that can save directly to disk.</p></aside>
+      {page === Page.HOME && view.phase === Phase.IDLE && <SignalField/>}
     </article></main>;
 }

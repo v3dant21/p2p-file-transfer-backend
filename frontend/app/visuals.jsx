@@ -32,3 +32,19 @@ export function TransferRoute({phase, percent}) {
     <Endpoint x={293} label="Receiver" active={complete}/>
   </svg>;
 }
+
+// A decorative ribbon below the controls. Actual file progress stays in TransferRoute.
+export function SignalField() {
+  return <svg className="signal-field" aria-hidden="true" focusable="false" viewBox="0 0 1000 186" preserveAspectRatio="none">
+    {Array.from({length: 15}, (_, lane) => {
+      const spread = (lane - 7) * 3.1;
+      const curve = `M-16 ${122 + spread} C165 ${122 + spread}, 230 ${24 - spread}, 386 ${59 - spread}
+        S632 ${168 + spread}, 750 ${106 + spread} S915 ${56 - spread}, 1016 ${54 - spread}`;
+      return <g key={lane}>
+        <path className="signal-strand" d={curve}/>
+        {lane % 3 === 1 && <path className="signal-glint" d={curve} pathLength="1000"
+          style={{animationDelay: `-${lane * 0.83}s`}}/>}
+      </g>;
+    })}
+  </svg>;
+}
