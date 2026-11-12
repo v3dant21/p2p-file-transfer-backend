@@ -2,9 +2,15 @@
 import {useEffect, useRef, useState} from "react";
 import {Session, Phase, MEMORY_LIMIT} from "../lib/session";
 
+import {Icon, TransferRoute} from "./visuals";
+
 const Page = Object.freeze({HOME: "home", SEND: "send", RECEIVE: "receive"});
 const blank = {phase: Phase.CONNECTING, bytes: 0, size: 0};
-const sizeLabel = n => new Intl.NumberFormat("en", {style:"unit", unit: n < 1e6 ? "byte" : "megabyte", maximumFractionDigits:2}).format(n < 1e6 ? n : n / 1e6);
+const units = ["B", "kB", "MB", "GB", "TB"];
+function sizeLabel(bytes) {
+  const index = bytes ? Math.min(4, Math.floor(Math.log10(bytes) / 3)) : 0;
+  return new Intl.NumberFormat("en", {maximumFractionDigits: 2}).format(bytes / 1000 ** index) + " " + units[index];
+}
 
 export default function TransferPage() {
   const session = useRef(null);
@@ -63,30 +69,56 @@ export default function TransferPage() {
   const idle = [Phase.IDLE, Phase.CONNECTING].includes(view.phase);
   const link = view.transfer_id && typeof window !== "undefined" ? location.origin + "/?id=" + view.transfer_id : "";
   const percent = view.size ? Math.floor(100 * view.bytes / view.size) : Number(view.phase === Phase.COMPLETE) * 100;
+  function start(role) {
+    history.pushState(null, "", "/#" + role);
+    setPage(role);
+    if (role === Page.SEND) return session.current.create(file);
+    let value = id.trim();
+    try { value = new URL(value).searchParams.get("id") || value; } catch {}
+    session.current.join(value);
+  }
+  const setup = idle || (page === Page.HOME && view.phase === Phase.ERROR);
+  const ready = view.phase === Phase.IDLE;
+  const progressing = [Phase.STREAMING, Phase.SAVING, Phase.COMPLETE].includes(view.phase);
+  const sendForm = <form className="task" onSubmit={e => {e.preventDefault(); start(Page.SEND);}}>
+    <h2><Icon name="send"/>Send a file</h2>
+    <p>Choose a file to create a receiver link.</p>
+    <label className={"picker" + (drag ? " over" : "")} onDragOver={e => {e.preventDefault(); setDrag(true);}}
+      onDragLeave={() => setDrag(false)} onDrop={e => {e.preventDefault(); setDrag(false); setFile(e.dataTransfer.files[0] || null);}}>
+      <input aria-label="Choose a file" type="file" onChange={e => setFile(e.target.files[0] || null)}/>
+      <span className="file-icon" key={file?.name || "empty"}><Icon name="file"/></span>
+      <span><strong>{file?.name || "Choose a file"}</strong><small>{file ? sizeLabel(file.size) : "or drag and drop it here"}</small></span>
+    </label>
+    <button className="action" disabled={!ready || !file}>Create link <Icon name="arrow"/></button>
+  </form>;
+  const receiveForm = <form className="task" onSubmit={e => {e.preventDefault(); start(Page.RECEIVE);}}>
+    <h2><Icon name="receive"/>Receive a file</h2>
+    <p>Join with the link or ID from the sender.</p>
+    <label className="field">Transfer link or ID<input required value={id} placeholder="Paste link or ID" onChange={e => setId(e.target.value)}/></label>
+    <button className="action" disabled={!ready || !id.trim()}>Join transfer <Icon name="arrow"/></button>
+  </form>;
   return <main>
-    <header><button className="brand" onClick={() => navigate(Page.HOME)}>↗ Relay</button>
-      <button className="quiet" onClick={changeTheme}>{theme === "dark" ? "Light" : "Dark"} theme</button></header>
-    <article><div className="eyebrow">FILE TRANSFER</div>
-      <h1>{page === Page.HOME ? <>Send a file.<br/>Share a link.</> : page === Page.SEND ? "Send a file." : "Receive a file."}</h1>
-      {page === Page.HOME ? <><p>Transfer one file up to 1 TB. Keep both tabs open until the receiver confirms completion.</p>
-        <div className="actions"><button onClick={() => navigate(Page.SEND)}>Send a file ↗</button><button className="secondary" onClick={() => navigate(Page.RECEIVE)}>Receive a file ↓</button></div></> :
-      <section>
-        {idle && page === Page.SEND && <><label className={"drop " + (drag ? "over" : "")} onDragOver={e => {e.preventDefault(); setDrag(true);}} onDragLeave={() => setDrag(false)} onDrop={e => {e.preventDefault(); setDrag(false); setFile(e.dataTransfer.files[0] || null);}}>
-          <input type="file" onChange={e => setFile(e.target.files[0] || null)}/><strong>{file?.name || "Choose a file or drop it here"}</strong><small>{file ? sizeLabel(file.size) : "Single file · Up to 1 TB"}</small></label>
-          <button disabled={!file || view.phase !== Phase.IDLE} onClick={() => session.current.create(file)}>Create transfer link ↗</button></>}
-        {idle && page === Page.RECEIVE && <form onSubmit={e => {e.preventDefault(); let value = id.trim(); try {value = new URL(value).searchParams.get("id") || value;} catch {} session.current.join(value);}}>
-          <label>Transfer ID or link<input required value={id} onChange={e => setId(e.target.value)} placeholder="Paste the sender’s link"/></label><button disabled={!id.trim() || view.phase !== Phase.IDLE}>Join transfer →</button></form>}
-        {page === Page.SEND && link && view.phase === Phase.WAITING && <><label>Receiver link<input readOnly value={link} onFocus={e => e.target.select()}/></label>
-          <button onClick={async () => {try {await navigator.clipboard.writeText(link); setCopied("Copied");} catch {setCopied("Select and copy the link above");}}}>{copied || "Copy link"}</button></>}
-        {view.name && !idle && <p className="filename">{view.name} · {sizeLabel(view.size)}</p>}
-        {view.phase === Phase.OFFERED && <><p>{typeof window.showSaveFilePicker === "function" ? "Choose where to save the incoming file." : "This browser supports downloads up to 32 MiB. Larger files require a browser with direct disk saving."}</p>
-          <button disabled={!window.showSaveFilePicker && view.size > MEMORY_LIMIT} onClick={() => session.current.accept()}>Accept file ↓</button></>}
-        {[Phase.STREAMING,Phase.SAVING,Phase.COMPLETE].includes(view.phase) && <><progress max="100" value={percent}/><small>{percent}% · {sizeLabel(view.bytes)} of {sizeLabel(view.size)}</small></>}
-        {view.download && <a className="download" href={view.download} download={view.name}>Download file ↓</a>}
+    <header><button className="brand" onClick={() => navigate(Page.HOME)}><Icon name="logo"/>Relay</button>
+      <div className="tools"><span className="connection" data-state={view.phase === Phase.ERROR ? "error" : view.phase === Phase.CONNECTING ? "pending" : "online"}>
+        <i/>{view.phase === Phase.ERROR ? "Interrupted" : view.phase === Phase.CONNECTING ? "Connecting" : "Connected"}</span>
+      <button className="theme" onClick={changeTheme} aria-label={theme === "dark" ? "Use light theme" : "Use dark theme"}><Icon name={theme === "dark" ? "sun" : "moon"}/></button></div>
+    </header>
+    <article><div className="intro"><div><h1>File transfer</h1><p>Share one file, up to 1 TB.</p></div><TransferRoute phase={view.phase} percent={percent}/></div>
+      {setup && <div className={"workspace" + (page === Page.HOME ? "" : " single")}>
+        {page !== Page.RECEIVE && sendForm}{page !== Page.SEND && receiveForm}
+      </div>}
+      {!setup && <section className="workspace live"><h2>{page === Page.SEND ? "Outgoing file" : "Incoming file"}</h2>
+        {view.name && <div className="file-row"><Icon name="file"/><strong>{view.name}</strong><small>{sizeLabel(view.size)}</small></div>}
+        <div role="status" className="phase">{view.error || view.phase}</div>
+        {page === Page.SEND && link && view.phase === Phase.WAITING && <><label className="field">Receiver link<input readOnly value={link} onFocus={e => e.target.select()}/></label>
+          <button className="action" onClick={async () => {try {await navigator.clipboard.writeText(link); setCopied("Copied");} catch {setCopied("Select and copy the link");}}}>{copied || "Copy link"}</button></>}
+        {view.phase === Phase.OFFERED && <><p>{window.showSaveFilePicker ? "Choose where to save your file." : "This browser supports downloads up to 32 MiB. Larger files need direct disk saving."}</p>
+          <button className="action" disabled={!window.showSaveFilePicker && view.size > MEMORY_LIMIT} onClick={() => session.current.accept()}>Accept file</button></>}
+        {progressing && <><progress aria-label="Acknowledged transfer progress" max="100" value={percent}/><small>{percent}% · {sizeLabel(view.bytes)} of {sizeLabel(view.size)}</small></>}
+        {view.download && <a className="action" href={view.download} download={view.name}>Download file</a>}
       </section>}
-      <div role="status" className="status"><i/>{view.error || view.phase}</div>
-      {page !== Page.HOME && <button className="quiet back" onClick={() => navigate(Page.HOME)}>← Back to home</button>}
-      {page === Page.HOME && view.phase === Phase.ERROR && <button onClick={() => setAttempt(n => n + 1)}>Reconnect</button>}
-    </article><footer>Relay <span>Browser-to-browser file transfer via WebSocket</span></footer>
-  </main>;
+      {page !== Page.HOME && <button className="back" onClick={() => navigate(Page.HOME)}>{progressing && view.phase !== Phase.COMPLETE ? "Cancel transfer" : "Back to transfers"}</button>}
+      {page === Page.HOME && view.phase === Phase.ERROR && <div role="alert"><p>{view.error}</p><button className="action" onClick={() => setAttempt(n => n + 1)}>Reconnect</button></div>}
+      <aside><h2>During a transfer</h2><p>Keep both tabs open until the receiver confirms completion. For files larger than 32 MiB, use a receiving browser that can save directly to disk.</p></aside>
+    </article></main>;
 }
