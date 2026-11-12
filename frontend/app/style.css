@@ -58,3 +58,21 @@ aside{margin-top:32px;padding:24px 0;border-top:1px solid var(--line);display:gr
   @keyframes signal-flow{from{stroke-dashoffset:28}to{stroke-dashoffset:-972}}
 }
 @media(max-width:680px){.signal-field{height:90px;margin-top:4px}}
+
+.flight-hero{position:relative;min-height:132svh}
+.flight-stage{position:sticky;top:0;display:flex;flex-direction:column;justify-content:center;min-height:calc(100svh - 76px);padding:clamp(32px,5vh,70px) 0 20px}
+.flight-copy{position:relative;z-index:1}
+.flight-copy h1{font-size:clamp(54px,8.6vw,112px);line-height:.96;letter-spacing:-.04em}
+.flight-copy em{font-family:Georgia,serif;font-weight:400;color:var(--accent)}
+.flight-copy p{margin-top:20px;font-size:clamp(16px,2vw,21px)}
+.hero-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:22px}
+.hero-actions .action{gap:9px;justify-content:center;padding:10px 16px}
+.flight-scene{display:block;width:100%;height:auto;max-height:34svh;margin:clamp(20px,4vh,54px) 0 0;overflow:visible}
+.flight-contours,.flight-guide,.flight-trail{fill:none;stroke:var(--accent)}
+.flight-contours{opacity:.18;stroke-width:.9}.flight-guide{stroke-dasharray:2 4;opacity:.55}
+.flight-trail{stroke-width:2}.flight-port ellipse{fill:var(--paper);stroke:var(--accent)}
+.flight-port circle{fill:var(--accent)}.flight-port text{fill:var(--muted);font:12px system-ui,sans-serif}
+.flight-file path:first-child{fill:var(--accent);stroke:var(--accent);stroke-linejoin:round;stroke-width:2}
+.flight-file path:last-child{fill:none;stroke:var(--paper);stroke-width:2;stroke-linejoin:round}
+@media(max-width:680px){.flight-stage{min-height:calc(88svh - 64px)}.flight-hero{min-height:115svh}.flight-scene{margin-top:44px}.flight-port text{font-size:20px}}
+@media(prefers-reduced-motion:reduce){.flight-hero{min-height:0}.flight-stage{position:static}}

@@ -2,6 +2,7 @@
 import {useEffect, useRef, useState} from "react";
 import {Session, Phase, MEMORY_LIMIT} from "../lib/session";
 
+import {TransferHero} from "./hero";
 import {Icon, SignalField, TransferRoute} from "./visuals";
 
 const Page = Object.freeze({HOME: "home", SEND: "send", RECEIVE: "receive"});
@@ -57,6 +58,7 @@ export default function TransferPage() {
   useEffect(() => {document.documentElement.dataset.theme = theme;}, [theme]);
 
   function navigate(next) {
+    window.scrollTo(0, 0);
     history.pushState(null, "", next === Page.HOME ? "/" : "/#" + next);
     // Keep the open, unbound endpoint when navigating between the initial screens.
     if (view.phase !== Phase.IDLE && view.phase !== Phase.CONNECTING) setAttempt(n => n + 1);
@@ -103,7 +105,8 @@ export default function TransferPage() {
         <i/>{view.phase === Phase.ERROR ? "Interrupted" : view.phase === Phase.CONNECTING ? "Connecting" : "Connected"}</span>
       <button className="theme" onClick={changeTheme} aria-label={theme === "dark" ? "Use light theme" : "Use dark theme"}><Icon name={theme === "dark" ? "sun" : "moon"}/></button></div>
     </header>
-    <article><div className="intro"><div><h1>File transfer</h1><p>Share one file, up to 1 TB.</p></div><TransferRoute phase={view.phase} percent={percent}/></div>
+    {page === Page.HOME && <TransferHero onSend={() => navigate(Page.SEND)} onReceive={() => navigate(Page.RECEIVE)}/>}
+    <article>{page !== Page.HOME && <div className="intro"><div><h1>File transfer</h1><p>Share one file, up to 1 TB.</p></div><TransferRoute phase={view.phase} percent={percent}/></div>}
       {setup && <div className={"workspace" + (page === Page.HOME ? "" : " single")}>
         {page !== Page.RECEIVE && sendForm}{page !== Page.SEND && receiveForm}
       </div>}
