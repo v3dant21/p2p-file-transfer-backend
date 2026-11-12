@@ -99,9 +99,12 @@ dependencies = [
  "axum",
  "futures",
  "futures-util",
+ "hyper",
+ "hyper-util",
  "serde",
  "serde_json",
  "tokio",
+ "tokio-tungstenite",
  "tower-http",
  "uuid",
 ]

@@ -1,3 +1,12 @@
+use axum::{
+    extract::{
+        ws::{Message, WebSocket},
+        State, WebSocketUpgrade,
+    },
+    response::IntoResponse,
+    routing::get,
+    Router,
+};
 use std::env;
 use std::time::Duration;
 use std::{collections::HashMap, sync::Arc};
@@ -11,53 +20,95 @@ use serde_json::{Value,json};
 use tower_http::services::ServeDir;
 use futures_util::{StreamExt, SinkExt};
 use serde::{Deserialize, Serialize};
-
-
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+use tokio::{
+    sync::mpsc,
+    time::{interval, timeout, Instant},
+};
+use tower_http::services::ServeDir;
 use uuid::Uuid;
-#[derive(Serialize, Deserialize)]
-struct FileMetadata {
+
+const MAX_BYTES: u64 = 1_000_000_000_000;
+const CHUNK_BYTES: usize = 1_048_576;
+const HEARTBEAT: Duration = Duration::from_secs(20);
+type Registry = Arc<Mutex<HashMap<String, Transfer>>>;
+type Outbox = mpsc::Sender<Message>;
+type Result<T> = std::result::Result<T, &'static str>;
+
+#[derive(Clone, Copy, PartialEq)]
+enum Role {
+    Sender,
+    Receiver,
+}
+#[derive(Clone, Copy, PartialEq)]
+enum Phase {
+    Waiting,
+    Offered,
+    Streaming,
+    Writing,
+    Saving,
+    Complete,
+}
+
+/// A socket owns exactly one endpoint. Its role and route cannot be changed by a chunk.
+struct Endpoint {
+    transfer_id: String,
+    role: Role,
+}
+/// The relay stores metadata and byte counters. File contents live only in bounded frames.
+struct Transfer {
+    sender: Outbox,
+    receiver: Option<Outbox>,
+    phase: Phase,
     name: String,
     size: u64,
-    mime_type: String,
-} 
-#[derive(Clone)]
-struct Pair {
-    sender: Option<broadcast::Sender<Message>>,
-    receiver: Option<broadcast::Sender<Message>>,
+    bytes: u64,
 }
 
-#[derive(Clone)]
-struct AppState {
-    pairs: Arc<Mutex<HashMap<String, Pair>>>,
-    conn_index: Arc<Mutex<HashMap<String, (String, String)>>>,
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum Command {
+    Create { name: String, size: u64 },
+    Join { transfer_id: String },
+    Accept,
+    Written { bytes: u64 },
+    Finish,
+    Saved,
+}
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum Event<'a> {
+    Hello {
+        endpoint_id: &'a str,
+        max_bytes: u64,
+        chunk_bytes: usize,
+    },
+    Created {
+        transfer_id: &'a str,
+    },
+    Paired,
+    Offer {
+        name: &'a str,
+        size: u64,
+    },
+    Ready,
+    Written {
+        bytes: u64,
+    },
+    Finish,
+    Complete,
+    Error {
+        message: &'a str,
+    },
 }
 
-fn normalize_id(raw: &str) -> String {
-    // If a full URL was pasted (e.g., http://localhost:8000/?id=XYZ), extract the id param
-    if let Some(idx) = raw.find("?id=") {
-        return raw[idx+4..].to_string();
-    }
-    // Fallback: if there's an '=', try to take the last segment
-    if raw.contains('=') {
-        if let Some(last) = raw.rsplit('=').next() {
-            return last.to_string();
-        }
-    }
-    raw.to_string()
-}
-#[tokio::main]
-async fn main() {
-    let state = AppState{
-        pairs: Arc::new(Mutex::new(HashMap::new())),
-        conn_index: Arc::new(Mutex::new(HashMap::new())),
-    };
-    
-    // Fix the router configuration
-    let app = Router::new()
-        .route("/ws", get(WebSocket_handler))
-        .nest_service("/", ServeDir::new("./"))
-        .with_state(state);
-
+fn notify(out: &Outbox, event: Event) -> Result<()> {
+    out.try_send(Message::Text(serde_json::to_string(&event).unwrap()))
+        .map_err(|_| "Peer unavailable")
  let port = env::var("PORT").unwrap_or("8000".to_string());
     let addr = format!("0.0.0.0:{}", port);
 
@@ -75,169 +126,210 @@ async fn WebSocket_handler (
     ws.on_upgrade(move|socket| handle_socket(socket, state))
 }
 
+impl Transfer {
+    fn receiver(&self) -> Result<&Outbox> {
+        self.receiver.as_ref().ok_or("Receiver disconnected")
+    }
 
-
-
-async fn handle_socket(socket: WebSocket, state: AppState) {
-    let conn_id = Uuid::new_v4().to_string();
-    let conn_id_clone = conn_id.clone();
-    println!("new connection {}", conn_id);
-
-    let (tx, mut rx) = broadcast::channel(100);
-    let (mut sender, mut receiver) = socket.split();
-    let (message_tx, mut message_rx) = mpsc::channel::<Message>(100);
-
-    let sender_task = tokio::spawn (async move{
-        while let Some(msg) = message_rx.recv().await{
-            if sender.send(msg).await.is_err(){
-                break;
+    fn advance(&mut self, role: Role, command: Command) -> Result<()> {
+        match (self.phase, role, command) {
+            (Phase::Offered, Role::Receiver, Command::Accept) => {
+                notify(&self.sender, Event::Ready)?;
+                self.phase = Phase::Streaming;
             }
-
+            (Phase::Writing, Role::Receiver, Command::Written { bytes }) if bytes == self.bytes => {
+                notify(&self.sender, Event::Written { bytes })?;
+                self.phase = Phase::Streaming;
+            }
+            (Phase::Streaming, Role::Sender, Command::Finish) if self.bytes == self.size => {
+                notify(self.receiver()?, Event::Finish)?;
+                self.phase = Phase::Saving;
+            }
+            (Phase::Saving, Role::Receiver, Command::Saved) => {
+                notify(&self.sender, Event::Complete)?;
+                notify(self.receiver()?, Event::Complete)?;
+                self.phase = Phase::Complete;
+            }
+            _ => return Err("Unexpected transfer command"),
         }
-    
-    
-    });  
+        Ok(())
+    }
 
-    let ping_tx = message_tx.clone();
-    let ping_task = tokio::spawn(async move {
-        let mut intervel = interval(Duration::from_secs(30));
-        loop{
-            intervel.tick().await;
-            if ping_tx.send(Message::Ping(vec![])).await.is_err(){
-                break;
-            }
-        } 
-    });
-
-    let forward_tx = message_tx.clone();
-    let forward_task = tokio::spawn(async move {
-        while let Ok(msg)= rx.recv().await{
-            if forward_tx.send(msg).await.is_err(){
-
-            }
+    fn chunk(&mut self, role: Role, data: Vec<u8>) -> Result<()> {
+        let end = self.bytes + data.len() as u64;
+        if role != Role::Sender
+            || self.phase != Phase::Streaming
+            || data.is_empty()
+            || data.len() > CHUNK_BYTES
+            || end > self.size
+        {
+            return Err("Unexpected file chunk");
         }
-    });
-    let receive_task = tokio::spawn({
-        let state = state.clone();
-        let tx = tx.clone();
-        let mut target_map: HashMap<String, String> = HashMap::new();
-        let mut total_bytes_forwarded: usize = 0;
-        
-        async move {
-            while let Some(Ok(msg)) = receiver.next().await {
-                match msg {
-                    Message::Text(text) => {
-                        if let Ok(data) = serde_json::from_str::<Value>(&text) {
-                            if data["type"] == "register" {
-                                if let (Some(id_raw), Some(role)) = (data["connectionId"].as_str(), data["role"].as_str()) {
-                                    let id = normalize_id(id_raw);
-                                    let mut pairs = state.pairs.lock().await;
-                                    let entry = pairs.entry(id.to_string()).or_insert(Pair { sender: None, receiver: None });
-                                    if role == "sender" {
-                                        entry.sender = Some(tx.clone());
-                                    } else if role == "receiver" {
-                                        entry.receiver = Some(tx.clone());
-                                    }
-                                    println!("[register] conn={} pair_id={} role={} (raw={})", conn_id, id, role, id_raw);
+        self.receiver()?
+            .try_send(Message::Binary(data))
+            .map_err(|_| "Receiver unavailable")?;
+        self.bytes = end;
+        self.phase = Phase::Writing;
+        Ok(())
+    }
+}
 
-                                    state.conn_index.lock().await.insert(conn_id.clone(), (id.to_string(), role.to_string()));
+fn handle(
+    registry: &Registry,
+    endpoint: &mut Option<Endpoint>,
+    out: &Outbox,
+    frame: Message,
+) -> Result<()> {
+    let mut transfers = registry.lock().unwrap();
+    let command = match frame {
+        Message::Text(text) if text.len() <= 4096 => {
+            serde_json::from_str(&text).map_err(|_| "Invalid command")?
+        }
+        Message::Binary(data) => {
+            let endpoint = endpoint.as_ref().ok_or("Register first")?;
+            return transfers
+                .get_mut(&endpoint.transfer_id)
+                .ok_or("Transfer ended")?
+                .chunk(endpoint.role, data);
+        }
+        _ => return Err("Invalid frame"),
+    };
+    match (endpoint.as_ref(), command) {
+        (None, Command::Create { name, size })
+            if size <= MAX_BYTES && !name.is_empty() && name.len() <= 1024 =>
+        {
+            let id = Uuid::new_v4().to_string();
+            transfers.insert(
+                id.clone(),
+                Transfer {
+                    sender: out.clone(),
+                    receiver: None,
+                    phase: Phase::Waiting,
+                    name,
+                    size,
+                    bytes: 0,
+                },
+            );
+            *endpoint = Some(Endpoint {
+                transfer_id: id.clone(),
+                role: Role::Sender,
+            });
+            notify(out, Event::Created { transfer_id: &id })
+        }
+        (None, Command::Join { transfer_id }) => {
+            let transfer = transfers
+                .get_mut(&transfer_id)
+                .ok_or("Unknown or expired transfer ID")?;
+            if transfer.phase != Phase::Waiting {
+                return Err("Transfer already has a receiver");
+            }
+            transfer.receiver = Some(out.clone());
+            transfer.phase = Phase::Offered;
+            *endpoint = Some(Endpoint {
+                transfer_id,
+                role: Role::Receiver,
+            });
+            notify(&transfer.sender, Event::Paired)?;
+            notify(
+                out,
+                Event::Offer {
+                    name: &transfer.name,
+                    size: transfer.size,
+                },
+            )
+        }
+        (Some(binding), command) => transfers
+            .get_mut(&binding.transfer_id)
+            .ok_or("Transfer ended")?
+            .advance(binding.role, command),
+        _ => Err("Invalid registration or file exceeds limit"),
+    }
+}
 
-                                    if role == "receiver" {
-                                        if let Some(sender_tx) = entry.sender.as_ref() {
-                                            let _ = sender_tx.send(Message::Text(json!({
-                                                "type": "recipient_connected"
-                                            }).to_string()));
-                                            println!("[notify] recipient_connected sent to sender for pair_id={}", id);
-                                        } else {
-                                            println!("[notify] receiver connected but sender missing for pair_id={}", id);
-                                        }
-                                    }
-                                }
-                                continue;
-                            } 
-                            
-                            // Handle file metadata
-                            if data["type"] == "file_info" {
-                                if let Some(pair_id_raw) = data["target_id"].as_str() {
-                                    let pair_id = normalize_id(pair_id_raw);
-                                    target_map.insert(conn_id.clone(), pair_id.to_string());
-                                    let pairs = state.pairs.lock().await;
-                                    if let Some((_, role)) = state.conn_index.lock().await.get(&conn_id).cloned() {
-                                        if let Some(pair) = pairs.get(&pair_id) {
-                                            let target_tx = if role == "sender" { pair.receiver.as_ref() } else { pair.sender.as_ref() };
-                                            if let Some(t) = target_tx {
-                                                println!("[file_info] from conn={} role={} -> pair_id={} forwarding (raw={})", conn_id, role, pair_id, pair_id_raw);
-                                                let _ = t.send(Message::Text(text));
-                                            } else {
-                                                println!("[file_info] counterpart missing for pair_id={} (role={})", pair_id, role);
-                                            }
-                                        } else { println!("[file_info] pair not found for pair_id={} (raw={})", pair_id, pair_id_raw); }
-                                    }
-                                }
-                                continue;
-                            }
-
-                            // Forward regular messages
-                            if let Some(pair_id_raw) = data["target_id"].as_str() {
-                                let pair_id = normalize_id(pair_id_raw);
-                                target_map.insert(conn_id.clone(), pair_id.to_string());
-                                let pairs = state.pairs.lock().await;
-                                if let Some((_, role)) = state.conn_index.lock().await.get(&conn_id).cloned() {
-                                    if let Some(pair) = pairs.get(&pair_id) {
-                                        let target_tx = if role == "sender" { pair.receiver.as_ref() } else { pair.sender.as_ref() };
-                                        if let Some(t) = target_tx {
-                                            println!("[text] from conn={} role={} -> pair_id={} forwarding (raw={})", conn_id, role, pair_id, pair_id_raw);
-                                            let _ = t.send(Message::Text(text));
-                                        } else { println!("[text] counterpart missing for pair_id={} (role={})", pair_id, role); }
-                                    } else { println!("[text] pair not found for pair_id={} (raw={})", pair_id, pair_id_raw); }
-                                }
-                            }
+async fn connection(mut socket: WebSocket, registry: Registry) {
+    let (out, mut inbox) = mpsc::channel(8);
+    let id = Uuid::new_v4().to_string();
+    let mut endpoint = None;
+    let mut heartbeat = interval(HEARTBEAT);
+    let mut last_seen = Instant::now();
+    let _ = notify(
+        &out,
+        Event::Hello {
+            endpoint_id: &id,
+            max_bytes: MAX_BYTES,
+            chunk_bytes: CHUNK_BYTES,
+        },
+    );
+    loop {
+        let frame = tokio::select! {
+            Some(frame) = inbox.recv() => frame,
+            _ = heartbeat.tick() => {
+                if last_seen.elapsed() > HEARTBEAT * 3 { break; }
+                Message::Ping(Vec::new())
+            }
+            incoming = socket.recv() => {
+                last_seen = Instant::now();
+                match incoming {
+                    Some(Ok(Message::Pong(_))) => continue,
+                    Some(Ok(Message::Ping(data))) => Message::Pong(data),
+                    None | Some(Err(_)) | Some(Ok(Message::Close(_))) => break,
+                    Some(Ok(frame)) => match handle(&registry, &mut endpoint, &out, frame) {
+                        Ok(()) => continue,
+                        Err(message) => {
+                            let error = Message::Text(serde_json::to_string(&Event::Error {message}).unwrap());
+                            let _ = timeout(HEARTBEAT, socket.send(error)).await;
+                            break;
                         }
                     }
-                    Message::Binary(bin_data) => {
-                        if let Some(pair_id) = target_map.get(&conn_id).cloned() {
-                            let pairs = state.pairs.lock().await;
-                            if let Some((_, role)) = state.conn_index.lock().await.get(&conn_id).cloned() {
-                                if let Some(pair) = pairs.get(&pair_id) {
-                                    let target_tx = if role == "sender" { pair.receiver.as_ref() } else { pair.sender.as_ref() };
-                                    if let Some(t) = target_tx {
-                                        total_bytes_forwarded += bin_data.len();
-                                        println!("[binary] conn={} role={} -> pair_id={} chunk={} bytes, total={} bytes", conn_id, role, pair_id, bin_data.len(), total_bytes_forwarded);
-                                        let _ = t.send(Message::Binary(bin_data));
-                                    } else { println!("[binary] counterpart missing for pair_id={} (role={})", pair_id, role); }
-                                } else { println!("[binary] pair not found for pair_id={}", pair_id); }
-                            }
-                        } else {
-                            println!("[binary] No target_id set yet for conn={} (expect a preceding JSON with target_id)", conn_id);
-                        }
-                    }
-                    Message::Close(_) => break,
-                    _ => continue,
                 }
             }
-        }
-    });
-    tokio::select! {
-        _= sender_task => {},
-        _=ping_task => {},
-        _= forward_task=> {},
-        _= receive_task=>{},
-    }
-    if let Some((pair_id, role)) = state.conn_index.lock().await.remove(&conn_id_clone) {
-        let mut pairs = state.pairs.lock().await;
-        if let Some(entry) = pairs.get_mut(&pair_id) {
-            if role == "sender" {
-                entry.sender = None;
-            } else if role == "receiver" {
-                entry.receiver = None;
-            }
-            if entry.sender.is_none() && entry.receiver.is_none() {
-                pairs.remove(&pair_id);
-            }
+        };
+        if !matches!(timeout(HEARTBEAT, socket.send(frame)).await, Ok(Ok(()))) {
+            break;
         }
     }
-    println!("connection closed{}", conn_id_clone)
-
-
-
+    if let Some(binding) = endpoint {
+        let mut transfers = registry.lock().unwrap();
+        if let Some(transfer) = transfers.remove(&binding.transfer_id) {
+            let peer = match binding.role {
+                Role::Sender => transfer.receiver.as_ref(),
+                Role::Receiver => Some(&transfer.sender),
+            };
+            if let Some(peer) = peer.filter(|_| transfer.phase != Phase::Complete) {
+                let _ = notify(
+                    peer,
+                    Event::Error {
+                        message: "Peer disconnected. Start a new transfer.",
+                    },
+                );
+            }
+        }
+    }
 }
+
+async fn upgrade(ws: WebSocketUpgrade, State(registry): State<Registry>) -> impl IntoResponse {
+    ws.max_message_size(CHUNK_BYTES)
+        .max_frame_size(CHUNK_BYTES)
+        .on_upgrade(move |socket| connection(socket, registry))
+}
+
+fn router(registry: Registry) -> Router {
+    Router::new()
+        .route("/ws", get(upgrade))
+        .route("/healthz", get(|| async { "ok" }))
+        .fallback_service(ServeDir::new("frontend/out"))
+        .with_state(registry)
+}
+
+#[tokio::main]
+async fn main() {
+    let app = router(Registry::default());
+    let port = std::env::var("PORT").unwrap_or_else(|_| "8000".into());
+    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}"))
+        .await
+        .unwrap();
+    axum::serve(listener, app).await.unwrap();
+}
+
+#[cfg(test)]
+mod tests;
