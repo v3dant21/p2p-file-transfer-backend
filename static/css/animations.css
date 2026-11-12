@@ -1,0 +1,194 @@
+/**
+ * Keyframe Animations & Animation Classes
+ */
+
+/* ═══════════════════════════════════════════════════════════
+   Keyframes
+   ═══════════════════════════════════════════════════════════ */
+
+@keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+@keyframes fadeOut {
+    from { opacity: 1; }
+    to { opacity: 0; }
+}
+
+@keyframes slideUp {
+    from { transform: translateY(20px); opacity: 0; }
+    to { transform: translateY(0); opacity: 1; }
+}
+
+@keyframes slideDown {
+    from { transform: translateY(-20px); opacity: 0; }
+    to { transform: translateY(0); opacity: 1; }
+}
+
+@keyframes slideLeft {
+    from { transform: translateX(20px); opacity: 0; }
+    to { transform: translateX(0); opacity: 1; }
+}
+
+@keyframes slideRight {
+    from { transform: translateX(-20px); opacity: 0; }
+    to { transform: translateX(0); opacity: 1; }
+}
+
+@keyframes scaleIn {
+    from { transform: scale(0.9); opacity: 0; }
+    to { transform: scale(1); opacity: 1; }
+}
+
+@keyframes scaleOut {
+    from { transform: scale(1); opacity: 1; }
+    to { transform: scale(0.9); opacity: 0; }
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+}
+
+@keyframes shimmer {
+    0% { background-position: -200% 0; }
+    100% { background-position: 200% 0; }
+}
+
+@keyframes float {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-6px); }
+}
+
+@keyframes shake {
+    0%, 100% { transform: translateX(0); }
+    20% { transform: translateX(-4px); }
+    40% { transform: translateX(4px); }
+    60% { transform: translateX(-4px); }
+    80% { transform: translateX(4px); }
+}
+
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+@keyframes confettiFall {
+    0% { transform: translateY(-10vh) rotate(0deg); opacity: 1; }
+    100% { transform: translateY(100vh) rotate(720deg); opacity: 0; }
+}
+
+@keyframes ringExpand {
+    0% { transform: scale(0); opacity: 0; }
+    50% { opacity: 1; }
+    100% { transform: scale(1.5); opacity: 0; }
+}
+
+@keyframes checkmarkDraw {
+    0% { stroke-dashoffset: 50; }
+    100% { stroke-dashoffset: 0; }
+}
+
+@keyframes skeletonLoad {
+    0% { background-position: -200% 0; }
+    100% { background-position: 200% 0; }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Animation Classes
+   ═══════════════════════════════════════════════════════════ */
+
+.animate-fade-in {
+    animation: fadeIn 0.3s ease-out forwards;
+}
+
+.animate-fade-out {
+    animation: fadeOut 0.3s ease-out forwards;
+}
+
+.animate-slide-up {
+    animation: slideUp 0.3s ease-out forwards;
+}
+
+.animate-slide-down {
+    animation: slideDown 0.3s ease-out forwards;
+}
+
+.animate-slide-left {
+    animation: slideLeft 0.3s ease-out forwards;
+}
+
+.animate-slide-right {
+    animation: slideRight 0.3s ease-out forwards;
+}
+
+.animate-scale-in {
+    animation: scaleIn 0.2s ease-out forwards;
+}
+
+.animate-scale-out {
+    animation: scaleOut 0.2s ease-out forwards;
+}
+
+.animate-pulse {
+    animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+.animate-float {
+    animation: float 3s ease-in-out infinite;
+}
+
+.animate-shake {
+    animation: shake 0.3s ease-in-out;
+}
+
+.animate-spin {
+    animation: spin 1s linear infinite;
+}
+
+.animate-skeleton {
+    background: linear-gradient(90deg, var(--color-secondary) 25%, var(--color-muted) 50%, var(--color-secondary) 75%);
+    background-size: 200% 100%;
+    animation: skeletonLoad 1.5s infinite;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Scroll-Triggered Animations
+   ═══════════════════════════════════════════════════════════ */
+
+/* Initial state for scroll-triggered elements */
+.pre-animate {
+    opacity: 0;
+    transform: translateY(20px);
+}
+
+/* Animate when added by Intersection Observer */
+.animate-in {
+    animation: slideUp 0.5s ease-out forwards;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Reduced Motion
+   ═══════════════════════════════════════════════════════════ */
+
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+    }
+
+    /* Disable scroll-behavior */
+    html {
+        scroll-behavior: auto;
+    }
+
+    /* Instant reveal for animate-in */
+    .pre-animate {
+        opacity: 1;
+        transform: none;
+    }
+}
