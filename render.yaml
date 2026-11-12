@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: p2p-file-transfer-relay
+    runtime: docker
+    branch: render-transfer
+    plan: free
+    healthCheckPath: /healthz
