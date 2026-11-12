@@ -7,6 +7,18 @@ use axum::{
     routing::get,
     Router,
 };
+use std::env;
+use std::time::Duration;
+use std::{collections::HashMap, sync::Arc};
+use axum::extract::ws::{Message, WebSocket};
+use axum::extract::{State, WebSocketUpgrade};
+use axum::response::IntoResponse;
+use axum::{Router, routing::get};
+use tokio::sync::{broadcast, mpsc, Mutex};
+use tokio::time::interval; 
+use serde_json::{Value,json};
+use tower_http::services::ServeDir;
+use futures_util::{StreamExt, SinkExt};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -97,6 +109,21 @@ enum Event<'a> {
 fn notify(out: &Outbox, event: Event) -> Result<()> {
     out.try_send(Message::Text(serde_json::to_string(&event).unwrap()))
         .map_err(|_| "Peer unavailable")
+ let port = env::var("PORT").unwrap_or("8000".to_string());
+    let addr = format!("0.0.0.0:{}", port);
+
+    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+
+    println!("server is running on {}", addr);
+
+    axum::serve(listener, app).await.unwrap();
+}   
+ 
+async fn WebSocket_handler (
+    ws : WebSocketUpgrade,
+    State(state): State<AppState>,
+)    -> impl IntoResponse {
+    ws.on_upgrade(move|socket| handle_socket(socket, state))
 }
 
 impl Transfer {
